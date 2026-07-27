@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 pseudo_dataset_extraction_pipeline.py
 
@@ -59,7 +58,7 @@ def natural_key(path):
     return [int(s) if s.isdigit() else s.lower() for s in re.split(r"(\d+)", text)]
 
 
-def list_images(input_dir, recursive=True):
+def list_images(input_dir, recursive=True, limit = None):
     """
     Mengambil gambar dari folder utama.
 
@@ -77,10 +76,11 @@ def list_images(input_dir, recursive=True):
     else:
         candidates = input_dir.iterdir()
 
-    images = [
-        p for p in candidates
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-    ]
+    if limit is not None:
+        candidates = list(input_dir.rglob("*"))
+        images = [p for p in candidates if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS][:limit]
+    else:
+        images = [p for p in candidates if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS]
 
     return sorted(images, key=lambda p: natural_key(p.relative_to(input_dir)))
 
@@ -823,16 +823,7 @@ def project_3d_to_2d(points_3d, K):
 
     return np.stack([u, v], axis=1)
 
-
-def draw_pseudo_pose_2d(
-    image_bgr,
-    landmarks_2d,
-    R_cam_hand,
-    t_cam_hand,
-    K_rect,
-    axis_length=0.05,
-    draw_id=True
-):
+def draw_landmark(image_bgr, landmarks_2d, draw_id=True):
     img_draw = image_bgr.copy()
     h, w = img_draw.shape[:2]
 
@@ -841,51 +832,27 @@ def draw_pseudo_pose_2d(
             u1, v1 = landmarks_2d[i]
             u2, v2 = landmarks_2d[j]
 
-            if (
-                0 <= u1 < w and 0 <= v1 < h and
-                0 <= u2 < w and 0 <= v2 < h
-            ):
-                cv2.line(
-                    img_draw,
-                    (int(u1), int(v1)),
-                    (int(u2), int(v2)),
-                    (0, 255, 0),
-                    2
-                )
+            if (0 <= u1 < w and 0 <= v1 < h and 0 <= u2 < w and 0 <= v2 < h):
+                cv2.line(img_draw, (int(u1), int(v1)), (int(u2), int(v2)), (0, 255, 0), 2)
 
         for idx, (u, v) in enumerate(landmarks_2d):
             if 0 <= u < w and 0 <= v < h:
-                cv2.circle(
-                    img_draw,
-                    (int(u), int(v)),
-                    5,
-                    (0, 0, 255),
-                    -1
-                )
-
+                cv2.circle(img_draw, (int(u), int(v)), 5, (0, 0, 255), -1)
                 if draw_id:
-                    cv2.putText(
-                        img_draw,
-                        str(idx),
-                        (int(u) + 5, int(v) - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.45,
-                        (255, 0, 0),
-                        1,
-                        cv2.LINE_AA
-                    )
+                    cv2.putText(img_draw, str(idx), (int(u) + 5, int(v) - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 0), 1, cv2.LINE_AA )
+    return img_draw
 
+def draw_pseudo_pose_2d(image_bgr, R_cam_hand, t_cam_hand, K_rect, axis_length=0.05):
+    img_draw = image_bgr.copy()
+        
     center = np.asarray(t_cam_hand, dtype=np.float32).reshape(3)
 
-    axis_points_3d = np.stack(
-        [
-            center,
-            center + axis_length * R_cam_hand[:, 0],
-            center + axis_length * R_cam_hand[:, 1],
-            center + axis_length * R_cam_hand[:, 2],
-        ],
-        axis=0
-    )
+    axis_points_3d = np.stack([center,
+                                center + axis_length * R_cam_hand[:, 0],
+                                center + axis_length * R_cam_hand[:, 1],
+                                center + axis_length * R_cam_hand[:, 2],],
+                                axis=0)
 
     axis_points_2d = project_3d_to_2d(axis_points_3d, K_rect)
 
@@ -994,20 +961,19 @@ def process_image(image_path, calib, detector, args, pose_state=None):
             raise ValueError(f"left_image_mode tidak dikenal: {args.left_image_mode}")
 
     if args.save_vis:
-        vis_dir = Path(args.output_dir) / "vis_2d_landmark"
+        vis_dir = Path(args.output_dir) / "vis_pseudo"
         vis_dir.mkdir(parents=True, exist_ok=True)
+        
+        img_vis = draw_pseudo_pose_2d(image_bgr=left_rectified_bgr, R_cam_hand=R_cam_hand, t_cam_hand=t_cam_hand, 
+                                      K_rect=K_rect, axis_length=args.axis_length)
+        cv2.imwrite(str(vis_dir / f"{stem}_vis_pseudo.png"), img_vis)
 
-        img_vis = draw_pseudo_pose_2d(
-            image_bgr=left_rectified_bgr,
-            landmarks_2d=landmarks_2d,
-            R_cam_hand=R_cam_hand,
-            t_cam_hand=t_cam_hand,
-            K_rect=K_rect,
-            axis_length=args.axis_length,
-            draw_id=True
-        )
+    if args.save_landmark_vis:
+        save_landmark_vis = Path(args.output_dir) / "vis_landmark"
+        save_landmark_vis.mkdir(parents=True, exist_ok=True)
 
-        cv2.imwrite(str(vis_dir / f"{stem}_vis_2d_landmark.png"), img_vis)
+        landmark_vis = draw_landmark(image_bgr=left_rectified_bgr, landmarks_2d=landmarks_2d, draw_id=True)
+        cv2.imwrite(str(save_landmark_vis / f"{stem}_vis_2d_landmark.png"), landmark_vis)
 
     if args.save_disparity:
         disp_dir = Path(args.output_dir) / "disparity"
@@ -1123,267 +1089,112 @@ def write_summary_csv(output_csv, records):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Batch pseudo-GT extraction: stereo image folder -> translation + rotation."
-    )
+    parser = argparse.ArgumentParser(description="Batch pseudo-GT extraction: stereo image folder -> translation + rotation.")
+    parser.add_argument("--input-dir", required=True, help="Folder utama yang berisi subfolder-subfolder data stereo image side-by-side.")
+    parser.add_argument("--non-recursive", action="store_true",
+                        help="Jika dipakai, hanya memproses gambar langsung di input-dir, tidak masuk ke subfolder.")
+    parser.add_argument("--calib", required=True, 
+                        help="Path file kalibrasi .npz berisi K_left, D_left, K_right, D_right, R, T.")
 
-    parser.add_argument(
-        "--input-dir",
-        required=True,
-        help="Folder utama yang berisi subfolder-subfolder data stereo image side-by-side."
-    )
+    parser.add_argument("--hand-model", required=True, help="Path model MediaPipe hand_landmarker.task.")
 
-    parser.add_argument(
-        "--non-recursive",
-        action="store_true",
-        help="Jika dipakai, hanya memproses gambar langsung di input-dir, tidak masuk ke subfolder."
-    )
+    parser.add_argument("--output-dir", default="pseudo_dataset_output", help="Folder output CSV dan visualisasi.")
 
-    parser.add_argument(
-        "--calib",
-        required=True,
-        help="Path file kalibrasi .npz berisi K_left, D_left, K_right, D_right, R, T."
-    )
+    parser.add_argument("--resize-width", type=int, default=2560,
+                        help="Resize lebar stereo image sebelum split. Pakai 0 untuk tidak resize.")
 
-    parser.add_argument(
-        "--hand-model",
-        required=True,
-        help="Path model MediaPipe hand_landmarker.task."
-    )
+    parser.add_argument("--resize-height", type=int, default=720,
+                        help="Resize tinggi stereo image sebelum split. Pakai 0 untuk tidak resize.")
 
-    parser.add_argument(
-        "--output-dir",
-        default="pseudo_dataset_output",
-        help="Folder output CSV dan visualisasi."
-    )
+    parser.add_argument("--rectify-alpha", type=float, default=0.0, 
+                        help="Alpha stereoRectify. 0 crop valid area, 1 full image.")
 
-    parser.add_argument(
-        "--resize-width",
-        type=int,
-        default=2560,
-        help="Resize lebar stereo image sebelum split. Pakai 0 untuk tidak resize."
-    )
+    parser.add_argument("--num-disparity-blocks", type=int, default=12, 
+                        help="numDisparities = nilai ini * 16. Default 12 -> 192.")
 
-    parser.add_argument(
-        "--resize-height",
-        type=int,
-        default=720,
-        help="Resize tinggi stereo image sebelum split. Pakai 0 untuk tidak resize."
-    )
+    parser.add_argument("--block-size", type=int, default=3, 
+                        help="StereoSGBM blockSize. Harus ganjil.")
 
-    parser.add_argument(
-        "--rectify-alpha",
-        type=float,
-        default=0.0,
-        help="Alpha stereoRectify. 0 crop valid area, 1 full image."
-    )
+    parser.add_argument("--filter-cap", type=int, default=63, 
+                        help="StereoSGBM preFilterCap.")
 
-    parser.add_argument(
-        "--num-disparity-blocks",
-        type=int,
-        default=12,
-        help="numDisparities = nilai ini * 16. Default 12 -> 192."
-    )
+    parser.add_argument("--wls-lambda", type=float, default=60000, help="WLS lambda.")
 
-    parser.add_argument(
-        "--block-size",
-        type=int,
-        default=3,
-        help="StereoSGBM blockSize. Harus ganjil."
-    )
+    parser.add_argument("--wls-sigma", type=float, default=1.2, help="WLS sigmaColor.")
 
-    parser.add_argument(
-        "--filter-cap",
-        type=int,
-        default=63,
-        help="StereoSGBM preFilterCap."
-    )
+    parser.add_argument("--uniqueness-ratio", type=int, default=15, help="StereoSGBM uniquenessRatio.")
 
-    parser.add_argument(
-        "--wls-lambda",
-        type=float,
-        default=60000,
-        help="WLS lambda."
-    )
+    parser.add_argument("--speckle-window-size", type=int, default=150, help="StereoSGBM speckleWindowSize.")
 
-    parser.add_argument(
-        "--wls-sigma",
-        type=float,
-        default=1.2,
-        help="WLS sigmaColor."
-    )
+    parser.add_argument("--speckle-range", type=int, default=2, help="StereoSGBM speckleRange.")
 
-    parser.add_argument(
-        "--uniqueness-ratio",
-        type=int,
-        default=15,
-        help="StereoSGBM uniquenessRatio."
-    )
+    parser.add_argument("--landmark-window-size", type=int, default=5,
+                        help="Window patch di sekitar landmark 2D untuk mengambil median titik 3D.")
 
-    parser.add_argument(
-        "--speckle-window-size",
-        type=int,
-        default=150,
-        help="StereoSGBM speckleWindowSize."
-    )
+    parser.add_argument("--landmark-min-disparity", type=float, default=0.1, 
+                        help="Minimum disparity valid untuk landmark 3D.")
 
-    parser.add_argument(
-        "--speckle-range",
-        type=int,
-        default=2,
-        help="StereoSGBM speckleRange."
-    )
+    parser.add_argument("--min-valid-landmarks", type=int, default=8, 
+                        help="Minimum jumlah landmark 3D valid agar frame tangan dihitung.")
 
-    parser.add_argument(
-        "--landmark-window-size",
-        type=int,
-        default=5,
-        help="Window patch di sekitar landmark 2D untuk mengambil median titik 3D."
-    )
+    parser.add_argument("--axis-length", type=float, default=0.05,
+                        help="Panjang sumbu lokal untuk visualisasi 2D. Satuan mengikuti kalibrasi.")
 
-    parser.add_argument(
-        "--landmark-min-disparity",
-        type=float,
-        default=0.1,
-        help="Minimum disparity valid untuk landmark 3D."
-    )
+    parser.add_argument("--save-vis", dest="save_vis", action="store_true", default=True,
+                        help="Simpan visualisasi 2D landmark + sumbu pose. Default: aktif.")
 
-    parser.add_argument(
-        "--min-valid-landmarks",
-        type=int,
-        default=8,
-        help="Minimum jumlah landmark 3D valid agar frame tangan dihitung."
-    )
+    parser.add_argument("--no-save-vis", dest="save_vis", action="store_false", help="Nonaktifkan penyimpanan visualisasi 2D.")
 
-    parser.add_argument(
-        "--axis-length",
-        type=float,
-        default=0.05,
-        help="Panjang sumbu lokal untuk visualisasi 2D. Satuan mengikuti kalibrasi."
-    )
+    parser.add_argument("--save-disparity", dest="save_disparity", action="store_true", default=True, 
+                        help="Simpan disparity visualization. Default: aktif.")
 
-    parser.add_argument(
-        "--save-vis",
-        dest="save_vis",
-        action="store_true",
-        default=True,
-        help="Simpan visualisasi 2D landmark + sumbu pose. Default: aktif."
-    )
+    parser.add_argument("--no-save-disparity", dest="save_disparity", action="store_false", 
+                        help="Nonaktifkan penyimpanan disparity visualization.")
 
-    parser.add_argument(
-        "--no-save-vis",
-        dest="save_vis",
-        action="store_false",
-        help="Nonaktifkan penyimpanan visualisasi 2D."
-    )
+    parser.add_argument("--save-landmarks", dest="save_landmarks", action="store_true", default=True,
+                        help="Simpan landmark 2D/3D per gambar ke CSV. Default: aktif.")
 
-    parser.add_argument(
-        "--save-disparity",
-        dest="save_disparity",
-        action="store_true",
-        default=True,
-        help="Simpan disparity visualization. Default: aktif."
-    )
+    parser.add_argument("--no-save-landmarks", dest="save_landmarks", action="store_false",
+                        help="Nonaktifkan penyimpanan landmark CSV.")
 
-    parser.add_argument(
-        "--no-save-disparity",
-        dest="save_disparity",
-        action="store_false",
-        help="Nonaktifkan penyimpanan disparity visualization."
-    )
+    parser.add_argument("--save-img-left", dest="save_img_left", action="store_true", default=True,
+                        help="Simpan image kiri ke folder img_left. Default: aktif.")
 
-    parser.add_argument(
-        "--save-landmarks",
-        dest="save_landmarks",
-        action="store_true",
-        default=True,
-        help="Simpan landmark 2D/3D per gambar ke CSV. Default: aktif."
-    )
+    parser.add_argument("--no-save-img-left", dest="save_img_left", action="store_false", 
+                        help="Nonaktifkan penyimpanan image kiri.")
 
-    parser.add_argument(
-        "--no-save-landmarks",
-        dest="save_landmarks",
-        action="store_false",
-        help="Nonaktifkan penyimpanan landmark CSV."
-    )
+    parser.add_argument("--left-image-mode", choices=["rectified", "raw", "both"], default="rectified",
+                        help="Jenis image kiri yang disimpan di img_left. Saran: rectified. Default: rectified.")
 
-    parser.add_argument(
-        "--save-img-left",
-        dest="save_img_left",
-        action="store_true",
-        default=True,
-        help="Simpan image kiri ke folder img_left. Default: aktif."
-    )
+    parser.add_argument("--temporal-smoothing", dest="temporal_smoothing", action="store_true", default=True,
+                        help="Aktifkan continuity correction + quaternion EMA untuk label rotasi. Default: aktif.")
 
-    parser.add_argument(
-        "--no-save-img-left",
-        dest="save_img_left",
-        action="store_false",
-        help="Nonaktifkan penyimpanan image kiri."
-    )
+    parser.add_argument("--no-temporal-smoothing", dest="temporal_smoothing", action="store_false",
+                        help="Nonaktifkan temporal smoothing rotasi.")
 
-    parser.add_argument(
-        "--left-image-mode",
-        choices=["rectified", "raw", "both"],
-        default="rectified",
-        help="Jenis image kiri yang disimpan di img_left. Saran: rectified. Default: rectified."
-    )
+    parser.add_argument("--rotation-smoothing-alpha", type=float, default=0.2, 
+                        help="Alpha EMA quaternion. Kecil=smooth, besar=responsif. Default: 0.2.")
 
-    parser.add_argument(
-        "--temporal-smoothing",
-        dest="temporal_smoothing",
-        action="store_true",
-        default=True,
-        help="Aktifkan continuity correction + quaternion EMA untuk label rotasi. Default: aktif."
-    )
+    parser.add_argument("--smooth-translation", action="store_true", default=False, 
+                        help="Aktifkan EMA untuk Tx,Ty,Tz. Default: nonaktif.")
 
-    parser.add_argument(
-        "--no-temporal-smoothing",
-        dest="temporal_smoothing",
-        action="store_false",
-        help="Nonaktifkan temporal smoothing rotasi."
-    )
+    parser.add_argument("--translation-smoothing-alpha", type=float, default=0.2, 
+                        help="Alpha EMA translation jika --smooth-translation aktif. Default: 0.2.")
 
-    parser.add_argument(
-        "--rotation-smoothing-alpha",
-        type=float,
-        default=0.2,
-        help="Alpha EMA quaternion. Kecil=smooth, besar=responsif. Default: 0.2."
-    )
+    parser.add_argument("--reset-smoothing-by-parent", dest="reset_smoothing_by_parent", action="store_true", default=True,
+                        help="Reset smoothing untuk setiap parent folder, cocok untuk nested video folders. Default: aktif.")
 
-    parser.add_argument(
-        "--smooth-translation",
-        action="store_true",
-        default=False,
-        help="Aktifkan EMA untuk Tx,Ty,Tz. Default: nonaktif."
-    )
+    parser.add_argument("--no-reset-smoothing-by-parent", dest="reset_smoothing_by_parent", action="store_false", 
+                        help="Gunakan satu state smoothing global untuk semua gambar.")
+    
+    parser.add_argument("--normal-facing-camera", default=True, help="Normal axis facing camera yes/no.")
 
-    parser.add_argument(
-        "--translation-smoothing-alpha",
-        type=float,
-        default=0.2,
-        help="Alpha EMA translation jika --smooth-translation aktif. Default: 0.2."
-    )
-
-    parser.add_argument(
-        "--reset-smoothing-by-parent",
-        dest="reset_smoothing_by_parent",
-        action="store_true",
-        default=True,
-        help="Reset smoothing untuk setiap parent folder, cocok untuk nested video folders. Default: aktif."
-    )
-
-    parser.add_argument(
-        "--no-reset-smoothing-by-parent",
-        dest="reset_smoothing_by_parent",
-        action="store_false",
-        help="Gunakan satu state smoothing global untuk semua gambar."
-    )
-    parser.add_argument(
-        "--normal-facing-camera",
-        default=True,
-        help="Normal axis facing camera yes/no."
-    )
+    parser.add_argument("--limit", default=None, type=int, 
+                        help="Limit run for n samples. Only run until dedicated number of samples reached")
+    
+    parser.add_argument("--save-landmark-vis", default=True, type=bool, 
+                        help="Save landmarks into vis_landmark folder. Default: True")
+                        
     return parser.parse_args()
 
 
@@ -1400,7 +1211,9 @@ def main():
 
     # Struktur output dibuat sejak awal agar konsisten.
     if args.save_vis:
-        (output_dir / "vis_2d_landmark").mkdir(parents=True, exist_ok=True)
+        (output_dir / "vis_pseudo").mkdir(parents=True, exist_ok=True)
+    if args.save_vis:
+        (output_dir / "vis_landmark").mkdir(parents=True, exist_ok=True)
     if args.save_disparity:
         (output_dir / "disparity").mkdir(parents=True, exist_ok=True)
     if args.save_landmarks:
@@ -1408,7 +1221,7 @@ def main():
     if args.save_img_left:
         (output_dir / "img_left").mkdir(parents=True, exist_ok=True)
 
-    images = list_images(input_dir, recursive=not args.non_recursive)
+    images = list_images(input_dir, recursive=not args.non_recursive, limit=args.limit)
 
     if len(images) == 0:
         raise FileNotFoundError(f"Tidak ada gambar di folder: {input_dir}")
@@ -1419,7 +1232,9 @@ def main():
     print("Calibration  :", args.calib)
     print("Hand model   :", args.hand_model)
     print("Output folder:", output_dir)
-
+    if args.limit is not None:
+        print(f"Run until: {args.limit} samples")
+        
     calib = load_calibration(args.calib)
 
     baseline = float(np.linalg.norm(calib["T"]))
@@ -1441,7 +1256,7 @@ def main():
     pose_states = {}
 
     try:
-        for idx, image_path in enumerate(images, start=1):
+        for idx, image_path in enumerate(images, start=1, ):
             print("\n" + "#" * 80)
             print(f"[{idx}/{len(images)}] Processing: {image_path.name}")
 

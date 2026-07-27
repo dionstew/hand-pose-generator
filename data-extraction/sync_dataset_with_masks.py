@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 sync_pseudo_dataset_with_semantic.py
 

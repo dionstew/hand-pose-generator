@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 pseudo_dataset_extraction_pipeline.py
 
