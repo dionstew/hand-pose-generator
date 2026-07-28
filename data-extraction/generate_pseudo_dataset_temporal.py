@@ -195,13 +195,9 @@ def rectify_stereo_image(
 
     if resize_width is not None and resize_height is not None:
         if resize_width > 0 and resize_height > 0:
-            image = cv2.resize(
-                image,
-                (int(resize_width), int(resize_height)),
-                interpolation=cv2.INTER_CUBIC
-            )
+            image = cv2.resize(image, (int(resize_width), int(resize_height)), interpolation=cv2.INTER_CUBIC)
 
-    image = cv2.GaussianBlur(image, (3, 3), 0.5)
+    image = cv2.GaussianBlur(image, (5, 5), 1.0)
 
     left_bgr, right_bgr = split_stereo_side_by_side(image)
 
@@ -209,16 +205,14 @@ def rectify_stereo_image(
     image_size_right = (right_bgr.shape[1], right_bgr.shape[0])
 
     if image_size_left != image_size_right:
-        raise ValueError(
-            f"Ukuran kiri dan kanan tidak sama: {image_size_left} vs {image_size_right}"
-        )
+        raise ValueError(f"Ukuran kiri dan kanan tidak sama: {image_size_left} vs {image_size_right}")
 
-    K_left = calib["K_left"]
-    D_left = calib["D_left"]
+    K_left  = calib["K_left"]
+    D_left  = calib["D_left"]
     K_right = calib["K_right"]
     D_right = calib["D_right"]
-    R = calib["R"]
-    T = calib["T"]
+    R       = calib["R"]
+    T       = calib["T"]
 
     R1, R2, P1, P2, Q, _, _     = cv2.stereoRectify(K_left,D_left,K_right,D_right,image_size_left,R,T,alpha=alpha)
     map_left_x, map_left_y      = cv2.initUndistortRectifyMap(K_left,D_left,R1,P1,image_size_left,cv2.CV_32FC1)
@@ -231,18 +225,8 @@ def rectify_stereo_image(
     return gray_left, gray_right, left_rectified_bgr, right_rectified_bgr, Q, P1, left_bgr, right_bgr
 
 
-def compute_disparity_wls(
-    gray_left,
-    gray_right,
-    num_disparity_blocks=12,
-    block_size=3,
-    filter_cap=63,
-    lmbda=60000,
-    sigma=1.2,
-    uniqueness_ratio=15,
-    speckle_window_size=150,
-    speckle_range=2
-):
+def compute_disparity_wls(gray_left, gray_right, num_disparity_blocks=12, block_size=3, filter_cap=63, lmbda=60000, sigma=1.2, uniqueness_ratio=15, 
+                          speckle_window_size=150, speckle_range=2):
     """
     Hitung disparity memakai StereoSGBM + WLS.
 
@@ -300,23 +284,12 @@ def compute_disparity_wls(
     displ_raw = left_matcher.compute(gray_left, gray_right).astype(np.int16)
     dispr_raw = right_matcher.compute(gray_right, gray_left).astype(np.int16)
 
-    filtered_raw = wls_filter.filter(
-        displ_raw,
-        gray_left,
-        None,
-        dispr_raw
-    ).astype(np.int16)
+    filtered_raw = wls_filter.filter(displ_raw, gray_left, None, dispr_raw).astype(np.int16)
 
     disparity_float = filtered_raw.astype(np.float32) / 16.0
 
-    disparity_vis = cv2.normalize(
-        disparity_float,
-        None,
-        alpha=0,
-        beta=255,
-        norm_type=cv2.NORM_MINMAX
-    ).astype(np.uint8)
-
+    disparity_vis = cv2.normalize(disparity_float, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U).astype(np.uint8)
+    disparity_vis = cv2.applyColorMap(disparity_vis, cv2.COLORMAP_JET)
     return displ_raw, dispr_raw, disparity_float, disparity_vis
 
 
@@ -886,18 +859,10 @@ def process_image(image_path, calib, detector, args, pose_state=None):
         alpha=args.rectify_alpha
     )
 
-    _, _, disparity_float, disparity_vis = compute_disparity_wls(
-        gray_left=gray_left,
-        gray_right=gray_right,
-        num_disparity_blocks=args.num_disparity_blocks,
-        block_size=args.block_size,
-        filter_cap=args.filter_cap,
-        lmbda=args.wls_lambda,
-        sigma=args.wls_sigma,
-        uniqueness_ratio=args.uniqueness_ratio,
-        speckle_window_size=args.speckle_window_size,
-        speckle_range=args.speckle_range,
-    )
+    _, _, disparity_float, disparity_vis = compute_disparity_wls(gray_left=gray_left, gray_right=gray_right, num_disparity_blocks=args.num_disparity_blocks,
+                                                                 block_size=args.block_size, filter_cap=args.filter_cap, lmbda=args.wls_lambda, sigma=args.wls_sigma,
+                                                                 uniqueness_ratio=args.uniqueness_ratio, speckle_window_size=args.speckle_window_size, 
+                                                                 speckle_range=args.speckle_range,)
 
     result = detector.detect(left_rectified_bgr)
     landmarks_2d = hand_landmarker_result_to_pixels(
